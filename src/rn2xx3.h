@@ -81,6 +81,9 @@ class rn2xx3
      */
     String deveui();
 
+    // NEW
+    String nwkskey();
+
     /*
      * Get the RN2xx3's hardware and firmware version number. This is also used
      * to detect if the module is either an RN2483 or an RN2903.
@@ -105,7 +108,8 @@ class rn2xx3
      * NwkSKey: Network Session Key as a HEX string.
      *          Example "AE17E567AECC8787F749A62F5541D522"
      */
-    bool initABP(const String& addr, const String& AppSKey, const String& NwkSKey);
+    bool initABP(const String& addr, const String& AppSKey, const String& NwkSKey, bool doReset = true, int txpower = 1, int sf = 7);
+    bool initABPstored(const String& AppSKey);
 
     //TODO: initABP(uint8_t * addr, uint8_t * AppSKey, uint8_t * NwkSKey)
 
@@ -152,6 +156,7 @@ class rn2xx3
      * The second parameter is the count of the bytes to send.
      */
     TX_RETURN_TYPE txBytes(const byte*, uint8_t);
+    TX_RETURN_TYPE txCnfBytes(const byte*, uint8_t);
 
     /*
      * Do a confirmed transmission via LoRa WAN.
@@ -222,6 +227,9 @@ class rn2xx3
      */
     int getSNR();
 
+    int getRadioPwr();
+    String getRadioSF();
+
     /*
      * Get the RN2xx3's voltage measurement on the Vdd in mVolt
      * 0–3600 (decimal value from 0 to 3600)
@@ -246,6 +254,14 @@ class rn2xx3
      * Reading this will clear the error.
      */
     String getLastErrorInvalidParam();
+
+    void sendMacSave();
+    void sendSysReset();
+    bool sendMacReset();
+    void sendMacJoinABP();
+
+    unsigned long getupctr();
+    void setupctr(unsigned long upctr);
 
   private:
     Stream& _serial;
@@ -305,13 +321,14 @@ class rn2xx3
     static received_t determineReceivedDataType(const String& receivedData);
 
     int readIntValue(const String& command);
-
+    String readValue(const String& command);
 
     // All "mac set ..." commands return either "ok" or "invalid_param"
     bool sendMacSet(const String& param, const String& value);
     bool sendMacSetEnabled(const String& param, bool enabled);
     bool sendMacSetCh(const String& param, unsigned int channel, const String& value);
     bool sendMacSetCh(const String& param, unsigned int channel, uint32_t value);
+    bool sendRadioSet(const String& param, const String& value);
     bool setChannelDutyCycle(unsigned int channel, unsigned int dutyCycle);
     bool setChannelFrequency(unsigned int channel, uint32_t frequency);
     bool setChannelDataRateRange(unsigned int channel, unsigned int minRange, unsigned int maxRange);
@@ -321,9 +338,11 @@ class rn2xx3
     bool setChannelEnabled(unsigned int channel, bool enabled);
     
     bool set2ndRecvWindow(unsigned int dataRate, uint32_t frequency);
+    bool setRx1Delay(unsigned int delay);
     bool setAdaptiveDataRate(bool enabled);
     bool setAutomaticReply(bool enabled);
     bool setTXoutputPower(int pwridx);
+    bool setSpreadFactor(int sf);
 
 };
 

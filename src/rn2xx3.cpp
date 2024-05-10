@@ -42,7 +42,6 @@ void rn2xx3::autobaud()
   }
 }
 
-
 String rn2xx3::sysver()
 {
   String ver = sendRawCommand(F("sys get ver"));
@@ -65,17 +64,20 @@ RN2xx3_t rn2xx3::configureModuleType()
       _moduleType = RN_NA;
       break;
   }
+
+  Serial.print("module type configured to "), Serial.println(model);
+
   return _moduleType;
 }
 
 String rn2xx3::hweui()
 {
-  return (sendRawCommand(F("sys get hweui")));
+  return sendRawCommand(F("sys get hweui"));
 }
 
 String rn2xx3::appeui()
 {
-  return ( sendRawCommand(F("mac get appeui") ));
+  return sendRawCommand(F("mac get appeui"));
 }
 
 String rn2xx3::appkey()
@@ -87,7 +89,23 @@ String rn2xx3::appkey()
 
 String rn2xx3::deveui()
 {
-  return (sendRawCommand(F("mac get deveui")));
+  return sendRawCommand(F("mac get deveui"));
+}
+
+String rn2xx3::nwkskey()
+{
+  return sendRawCommand(F("mac get nwkskey"));
+}
+
+void rn2xx3::sendSysReset()
+{
+  sendRawCommand(F("sys reset"));
+}
+
+bool rn2xx3::sendMacReset()
+{
+  sendRawCommand(F("mac reset 868"));
+  return true;
 }
 
 bool rn2xx3::init()
@@ -102,10 +120,9 @@ bool rn2xx3::init()
   }
   else
   {
-    return initABP(_devAddr, _appskey, _nwkskey);
+    return initABP(_devAddr, _appskey, _nwkskey, true, 1);
   }
 }
-
 
 bool rn2xx3::initOTAA(const String& AppEUI, const String& AppKey, const String& DevEUI)
 {
@@ -159,11 +176,17 @@ bool rn2xx3::initOTAA(const String& AppEUI, const String& AppKey, const String& 
       sendMacSet(F("appeui"), _appeui);
   }
 
-  // A valid length App Key was give. Use it.
+  // A valid length App Key was given. Use it.
   if ( AppKey.length() == 32 )
   {
     _appskey = AppKey; //reuse the same variable as for ABP
-    sendMacSet(F("appkey"), _appskey);
+
+    // sometimes it fails, so repeat it a few times
+    const int max_tries = 5;
+    int i = 0;
+    
+    while(!sendMacSet(F("appkey"), _appskey) && i++ < max_tries)
+      delay(100);
   }
 
   if (_moduleType == RN2903)
@@ -173,9 +196,9 @@ bool rn2xx3::initOTAA(const String& AppEUI, const String& AppKey, const String& 
   else
   {
     // RN2483 (Europe)
-    setTXoutputPower(1);
-    sendRawCommand(F("mac set dr 5")); //0= min, 7=max
+    setTXoutputPower(5); // was 1
   }
+  setDR(6); //0= min, 7=max
 
   // TTN does not yet support Adaptive Data Rate.
   // Using it is also only necessary in limited situations.
@@ -185,15 +208,25 @@ bool rn2xx3::initOTAA(const String& AppEUI, const String& AppKey, const String& 
   // Switch off automatic replies, because this library can not
   // handle more than one mac_rx per tx. See RN2483 datasheet,
   // 2.4.8.14, page 27 and the scenario on page 19.
-
   setAutomaticReply(false);
+
+  // the default 1000 is wrong for TTN?
+  setRx1Delay(1000);
+
+  // sendRawCommand(F("radio set rxbw 125")); // bandwidth
+  // sendRawCommand(F("radio set sf sf7")); // sf7, sf8, sf9, sf10, sf11 or sf12
 
   // Semtech and TTN both use a non default RX2 window freq and SF.
   // Maybe we should not specify this for other networks.
-  // if (_moduleType == RN2483)
-  // {
-  //   set2ndRecvWindow(3, 869525000);
-  // }
+  if (_moduleType == RN2483)
+  {
+    // sometimes it gives an "invalid_param" so try again
+    for(int i=0; i < 10; i++) {
+      if(set2ndRecvWindow(3, 869525000)) {
+        break;
+      }
+    }
+  }
   // Disabled for now because an OTAA join seems to work fine without.
 
   _serial.setTimeout(30000);
@@ -201,12 +234,16 @@ bool rn2xx3::initOTAA(const String& AppEUI, const String& AppKey, const String& 
 
   bool joined = false;
 
-  // Only try twice to join, then return and let the user handle it.
-  for(int i=0; i<2 && !joined; i++)
+  // Only try 3 times to join, then return and let the user handle it.
+  // no reason to try 4 times since at the 4th attempts it always returns "no_free_ch"
+  for(int i=0; i<3 && !joined; i++)
   {
     sendRawCommand(F("mac join otaa"));
+    // delay(2000); // NEW
+
     // Parse 2nd response
     receivedData = _serial.readStringUntil('\n');
+    Serial.print("receivedData: "), Serial.println(receivedData);
 
     if(receivedData.startsWith(F("accepted")))
     {
@@ -215,13 +252,13 @@ bool rn2xx3::initOTAA(const String& AppEUI, const String& AppKey, const String& 
     }
     else
     {
-      delay(1000);
+      // delay(5000);
+      delay(1000); // NEW
     }
   }
   _serial.setTimeout(2000);
   return joined;
 }
-
 
 bool rn2xx3::initOTAA(uint8_t * AppEUI, uint8_t * AppKey, uint8_t * DevEUI)
 {
@@ -258,12 +295,27 @@ bool rn2xx3::initOTAA(uint8_t * AppEUI, uint8_t * AppKey, uint8_t * DevEUI)
   return initOTAA(app_eui, app_key, dev_eui);
 }
 
-bool rn2xx3::initABP(const String& devAddr, const String& AppSKey, const String& NwkSKey)
+// void rn2xx3::sendMacJoinABP() {
+
+//   _otaa = false;
+
+//   _serial.setTimeout(60000);
+//   sendRawCommand(F("mac join abp"));
+
+//   String receivedData = _serial.readStringUntil('\n');
+//   _serial.setTimeout(2000);
+//   delay(1000);
+
+//   Serial.print("receivedData: ");
+//   Serial.println(receivedData);
+// }
+
+bool rn2xx3::initABPstored(const String& AppSKey)
 {
   _otaa = false;
-  _devAddr = devAddr;
+  _devAddr = "0";
   _appskey = AppSKey;
-  _nwkskey = NwkSKey;
+  _nwkskey = "0";
   String receivedData;
 
   //clear serial buffer
@@ -287,9 +339,9 @@ bool rn2xx3::initABP(const String& devAddr, const String& AppSKey, const String&
       return false;
   }
 
-  sendMacSet(F("nwkskey"), _nwkskey);
-  sendMacSet(F("appskey"), _appskey);
-  sendMacSet(F("devaddr"), _devAddr);
+  // sendMacSet(F("nwkskey"), _nwkskey);
+  // sendMacSet(F("appskey"), _appskey);
+  // sendMacSet(F("devaddr"), _devAddr);
   setAdaptiveDataRate(false);
 
   // Switch off automatic replies, because this library can not
@@ -303,17 +355,101 @@ bool rn2xx3::initABP(const String& devAddr, const String& AppSKey, const String&
   }
   else
   {
-    setTXoutputPower(1);
+    setTXoutputPower(5);
   }
-  sendMacSet(F("dr"), String(5)); //0= min, 7=max
+  setDR(6); //0= min, 7=max // was 5
 
   _serial.setTimeout(60000);
-  sendRawCommand(F("mac save"));
+  // sendRawCommand(F("mac save"));
   sendRawCommand(F("mac join abp"));
   receivedData = _serial.readStringUntil('\n');
 
   _serial.setTimeout(2000);
   delay(1000);
+
+  Serial.print("receivedData: ");
+  Serial.println(receivedData);
+
+  if(receivedData.startsWith(F("accepted")))
+  {
+    return true;
+    //with abp we can always join successfully as long as the keys are valid
+  }
+  else
+  {
+    return false;
+  }
+}
+
+bool rn2xx3::initABP(const String& devAddr, const String& AppSKey, const String& NwkSKey, bool doReset, int txpower, int sf)
+{
+  _otaa = false;
+  _devAddr = devAddr;
+  _appskey = AppSKey;
+  _nwkskey = NwkSKey;
+  String receivedData;
+
+  //clear serial buffer
+  while(_serial.available())
+    _serial.read();
+
+  configureModuleType();
+
+  if (doReset) {
+    switch (_moduleType) {
+      case RN2903:
+        sendRawCommand(F("mac reset"));
+        break;
+      case RN2483:
+        sendRawCommand(F("mac reset 868"));
+        // set2ndRecvWindow(3, 869525000);
+        // In the past we set the downlink channel here,
+        // but setFrequencyPlan is a better place to do it.
+        break;
+      default:
+        // we shouldn't go forward with the init
+        return false;
+    }
+  }
+
+  sendMacSet(F("nwkskey"), _nwkskey);
+  sendMacSet(F("appskey"), _appskey);
+  sendMacSet(F("devaddr"), _devAddr);
+
+  setAdaptiveDataRate(false);
+
+  // Switch off automatic replies, because this library can not
+  // handle more than one mac_rx per tx. See RN2483 datasheet,
+  // 2.4.8.14, page 27 and the scenario on page 19.
+  setAutomaticReply(false);
+
+  if (_moduleType == RN2903)
+  {
+    setTXoutputPower(5);
+  }
+  else
+  {
+    setTXoutputPower(txpower); //pwridx: was 1, from 0 to 5 for 433 MHz frequency band and from 1 to 5 for 868 MHz
+  }
+  // not setting this apparently forces SF to be 12
+  // setting it to 7 apparently is rejected as invalid_param
+  // setDR(6); //0= min, 7=max
+
+  // sendRadioSet("rxbw", "125"); // receive bandwidth
+  sendRadioSet("pwr", "15"); // set power
+  setSpreadFactor(sf); // set spread factor
+
+  _serial.setTimeout(60000);
+  sendRawCommand(F("mac save"));
+  sendRawCommand(F("mac join abp"));
+
+  receivedData = _serial.readStringUntil('\n');
+
+  _serial.setTimeout(2000);
+  delay(1000);
+
+  Serial.print("receivedData: ");
+  Serial.println(receivedData);
 
   if(receivedData.startsWith(F("accepted")))
   {
@@ -345,6 +481,20 @@ TX_RETURN_TYPE rn2xx3::txBytes(const byte* data, uint8_t size)
   return txCommand("mac tx uncnf 1 ", dataToTx, false);
 }
 
+TX_RETURN_TYPE rn2xx3::txCnfBytes(const byte* data, uint8_t size)
+{
+  char msgBuffer[size*2 + 1];
+
+  char buffer[3];
+  for (unsigned i=0; i<size; i++)
+  {
+    sprintf(buffer, "%02X", data[i]);
+    memcpy(&msgBuffer[i*2], &buffer, sizeof(buffer));
+  }
+  String dataToTx(msgBuffer);
+  return txCommand("mac tx cnf 1 ", dataToTx, false);
+}
+
 TX_RETURN_TYPE rn2xx3::txCnf(const String& data)
 {
   return txCommand("mac tx cnf 1 ", data, true);
@@ -367,6 +517,12 @@ TX_RETURN_TYPE rn2xx3::txCommand(const String& command, const String& data, bool
 
   while(!send_success)
   {
+
+    Serial.print("txCommand: ");
+    Serial.print(command);
+    Serial.print(", data: ");
+    Serial.println(data);
+
     //retransmit a maximum of 10 times
     retry_count++;
     if(retry_count>10)
@@ -567,6 +723,16 @@ int rn2xx3::getSNR()
   return readIntValue(F("radio get snr"));
 }
 
+int rn2xx3::getRadioPwr()
+{
+  return readIntValue(F("radio get pwr"));
+}
+
+String rn2xx3::getRadioSF()
+{
+  return readValue(F("radio get sf"));
+}
+
 int rn2xx3::getVbat()
 {
   return readIntValue(F("sys get vdd"));
@@ -598,7 +764,10 @@ String rn2xx3::base16decode(const String& input_c)
 
 void rn2xx3::setDR(int dr)
 {
-  if(dr>=0 && dr<=5)
+
+  // not setting the data rate (dr) causes the spreading factor to be 12 which sometimes is what we want
+
+  if(dr>=0 && dr<=7)
   {
     sendMacSet(F("dr"), String(dr));
   }
@@ -626,6 +795,10 @@ String rn2xx3::sendRawCommand(const String& command)
   }
 
   //TODO: Add debug print
+  Serial.print("sendRawCommand: ");
+  Serial.print(command);
+  Serial.print(", ret: ");
+  Serial.println(ret);
 
   return ret;
 }
@@ -683,10 +856,13 @@ bool rn2xx3::setFrequencyPlan(FREQ_PLAN fp)
        * https://github.com/TheThingsNetwork/arduino-device-lib
        */
 
+        Serial.println("setFrequencyPlan RN2483");
+
         uint32_t freq = 867100000;
         for (uint8_t ch = 0; ch < 8; ch++)
         {
           setChannelDutyCycle(ch, 799); // All channels
+
           if (ch == 1)
           {
             setChannelDataRateRange(ch, 0, 6);
@@ -770,8 +946,11 @@ bool rn2xx3::setFrequencyPlan(FREQ_PLAN fp)
   return returnValue;
 }
 
-
 rn2xx3::received_t rn2xx3::determineReceivedDataType(const String& receivedData) {
+
+  Serial.print("received data: ");
+  Serial.println(receivedData);
+
   if (receivedData.length() != 0) {
     #define MATCH_STRING(S) \
     if (receivedData.startsWith(F(#S))) return (rn2xx3::S);
@@ -821,6 +1000,13 @@ int rn2xx3::readIntValue(const String& command)
   return value.toInt();
 }
 
+String rn2xx3::readValue(const String& command)
+{
+  String value = sendRawCommand(command);
+  value.trim();
+  return value;
+}
+
 String rn2xx3::getLastErrorInvalidParam() 
 {
   String res = _lastErrorInvalidParam;
@@ -862,6 +1048,23 @@ bool rn2xx3::sendMacSetCh(const String& param, unsigned int channel, uint32_t va
   return sendMacSetCh(param, channel, String(value));
 }
 
+bool rn2xx3::sendRadioSet(const String& param, const String& value)
+{
+  String command;
+  command.reserve(10 + param.length() + value.length());
+  command = F("radio set ");
+  command += param;
+  command += ' ';
+  command += value;
+
+  return sendRawCommand(command).equals(F("ok"));
+}
+
+void rn2xx3::sendMacSave()
+{
+  sendRawCommand(F("mac save"));
+}
+
 bool rn2xx3::setChannelDutyCycle(unsigned int channel, unsigned int dutyCycle)
 {
   return sendMacSetCh(F("dcycle"), channel, dutyCycle);
@@ -886,6 +1089,13 @@ bool rn2xx3::setChannelEnabled(unsigned int channel, bool enabled)
   return sendMacSetCh(F("status"), channel, enabled ? F("on") : F("off"));
 }
 
+bool rn2xx3::setRx1Delay(unsigned int delay)
+{
+  String value;
+  value = String(delay);
+  return sendMacSet(F("rxdelay1"), value);
+}
+
 bool rn2xx3::set2ndRecvWindow(unsigned int dataRate, uint32_t frequency)
 {
   String value;
@@ -908,4 +1118,18 @@ bool rn2xx3::setAutomaticReply(bool enabled)
 bool rn2xx3::setTXoutputPower(int pwridx)
 {
   return sendMacSet(F("pwridx"), String(pwridx));
+}
+
+bool rn2xx3::setSpreadFactor(int sf)
+{
+  return sendRadioSet(F("sf"), String("sf") + String(sf)); // set spread factor
+}
+
+unsigned long rn2xx3::getupctr() {
+  String retStr = sendRawCommand(F("mac get upctr"));
+  return strtoul(retStr.c_str(), NULL, 10);;
+}
+
+void rn2xx3::setupctr(unsigned long upctr) {
+  sendMacSet(F("upctr"), String(upctr));
 }
